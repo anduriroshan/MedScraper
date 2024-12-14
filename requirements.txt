@@ -1,0 +1,14 @@
+numpy
+pandas
+seaborn
+scikit-learn
+xgboost
+catboost
+lightgbm
+requests
+BeautifulSoup
+Selenium
+mysql.connector
+gensim
+pymilvus
+
