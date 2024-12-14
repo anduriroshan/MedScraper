@@ -1,4 +1,4 @@
-numpy
+numpy==1.12
 pandas
 seaborn
 scikit-learn
@@ -6,10 +6,10 @@ xgboost
 catboost
 lightgbm
 requests
-BeautifulSoup
-Selenium
-mysql.connector
+beautifulsoup4
+selenium
+mysql-connector-python
 gensim
 pymilvus
 
--e.
+-e .
