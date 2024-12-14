@@ -12,3 +12,4 @@ mysql.connector
 gensim
 pymilvus
 
+-e.
