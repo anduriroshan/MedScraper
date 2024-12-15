@@ -1,15 +1,9 @@
-numpy==1.12
 pandas
-seaborn
-scikit-learn
-xgboost
-catboost
-lightgbm
 requests
 beautifulsoup4
-selenium
 mysql-connector-python
 gensim
 pymilvus
+sentence-transformers
 
 -e .
