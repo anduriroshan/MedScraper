@@ -1,4 +1,4 @@
-from pymilvus import Collection, connections, FieldSchema, CollectionSchema, DataType
+from pymilvus import Collection, connections
 from sentence_transformers import SentenceTransformer
 import mysql.connector
 import configparser
@@ -7,185 +7,190 @@ import re
 import spacy
 from src.logger import logging
 
+# Load Configurations
+config = configparser.ConfigParser()
+config.read("config/config.ini")
 
-class AdvancedArticleSearch:
-    def __init__(self, config_path="config/config.ini"):
-        """
-        Initialize search with configuration and setup
-        """
-        # Load Configurations
-        self.config = configparser.ConfigParser()
-        self.config.read(config_path)
+MYSQL_CONFIG = {
+    "host": config["MYSQL"]["host"],
+    "user": config["MYSQL"]["user"],
+    "password": config["MYSQL"]["password"],
+    "database": config["MYSQL"]["database"]
+}
 
-        # MySQL Configuration
-        self.mysql_config = {
-            "host": self.config["MYSQL"]["host"],
-            "user": self.config["MYSQL"]["user"],
-            "password": self.config["MYSQL"]["password"],
-            "database": self.config["MYSQL"]["database"]
-        }
+# Load English NLP Model for Query Parsing
+nlp = spacy.load("en_core_web_sm")
 
-        # Load NLP Model
-        self.nlp = spacy.load("en_core_web_sm")
 
-        # Initialize Sentence Transformer
-        self.model = SentenceTransformer("multi-qa-mpnet-base-cos-v1")
+def parse_advanced_date_from_query(query):
+    """
+    Advanced date parsing with support for more complex time expressions.
 
-    def parse_date_from_query(self, query):
-        """
-        Advanced date parsing with support for complex time expressions
-        """
-        today = datetime.today()
-        query = query.lower()
+    Input:
+        - query (str): The natural language query containing time-related expressions (e.g., "last week", "2023 year").
 
-        # Expanded date parsing patterns
-        date_patterns = [
-            # Year-based queries
-            (r'in (\d{4})', lambda match: (
-                datetime(int(match.group(1)), 1, 1).date(),
-                datetime(int(match.group(1)), 12, 31).date()
-            )),
-            # Month and year queries
-            (r'(\w+) (\d{4})', lambda match: self._parse_month_year(match.group(1), int(match.group(2)))),
-            # Relative time queries
-            ('last week', lambda _: (today - timedelta(days=7), today)),
-            ('last month', lambda _: (
-                (today.replace(day=1) - timedelta(days=1)).replace(day=1),
-                today.replace(day=1) - timedelta(days=1)
-            )),
-            ('this month', lambda _: (today.replace(day=1), today)),
-            ('yesterday', lambda _: (today - timedelta(days=1), today - timedelta(days=1)))
-        ]
+    Output:
+        - tuple: A tuple containing the start and end dates derived from the query (start_date, end_date).
 
-        # Check patterns
-        for pattern, date_func in date_patterns:
-            match = re.search(pattern, query)
-            if match:
-                return date_func(match)
+    Purpose:
+        This function parses natural language time expressions such as "last week", "yesterday", "this month", "2023 year", etc.
+        and returns the corresponding date range. It provides support for both relative and year-based queries.
+    """
+    today = datetime.today()
+    query = query.lower()
 
-        # Default to last 30 days
-        return (today - timedelta(days=30), today)
+    # Patterns for year-based queries
+    year_patterns = [
+        r'in (\d{4})',  # "in 2023"
+        r'year (\d{4})',  # "year 2023"
+        r'(\d{4}) year',  # "2023 year"
+    ]
 
-    def _parse_month_year(self, month_str, year):
-        """
-        Helper method to parse month and year
-        """
-        month_map = {
-            'january': 1, 'jan': 1,
-            'february': 2, 'feb': 2,
-            'march': 3, 'mar': 3,
-            'april': 4, 'apr': 4,
-            'may': 5,
-            'june': 6, 'jun': 6,
-            'july': 7, 'jul': 7,
-            'august': 8, 'aug': 8,
-            'september': 9, 'sep': 9,
-            'october': 10, 'oct': 10,
-            'november': 11, 'nov': 11,
-            'december': 12, 'dec': 12
-        }
+    # Check for year-specific queries first
+    for pattern in year_patterns:
+        match = re.search(pattern, query)
+        if match:
+            year = int(match.group(1))
+            return datetime(year, 1, 1).date(), datetime(year, 12, 31).date()
 
-        month = month_map.get(month_str.lower())
-        if month:
-            first_day = datetime(year, month, 1).date()
-            last_day = (first_day.replace(day=1) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-            return first_day, last_day
+    # Existing time-based parsing from original function
+    if "last week" in query:
+        start_date = today - timedelta(days=7)
+    elif "yesterday" in query:
+        start_date = today - timedelta(days=1)
+    elif "this month" in query:
+        start_date = today.replace(day=1)
+    elif "last month" in query:
+        first_day_of_this_month = today.replace(day=1)
+        start_date = first_day_of_this_month - timedelta(days=1)
+        start_date = start_date.replace(day=1)
+    else:
+        # Default to a wide range if no specific time is found
+        start_date = today - timedelta(days=30)
 
-        return datetime(year, 1, 1).date(), datetime(year, 12, 31).date()
+    return start_date.date(), today.date()
 
-    def search_articles(self, query, top_k=50):
-        """
-        Comprehensive article search using Milvus and MySQL
-        """
-        try:
-            # Parse date from query
-            start_date, end_date = self.parse_date_from_query(query)
-            logging.info(f"Searching for articles published between {start_date} and {end_date}")
 
-            # Connect to Milvus
-            connections.connect(
-                host=self.config["MILVUS"]["host"],
-                port=self.config["MILVUS"]["port"]
-            )
-            collection = Collection(self.config["MILVUS"]["collection_name"])
-            collection.load()
+def fetch_articles_from_mysql(ids, start_date, end_date):
+    """
+    Fetch articles by their IDs and filter by publication date.
 
-            # Generate query embedding
-            embedding = self.model.encode([query])[0]
+    Input:
+        - ids (list): List of article IDs to fetch from MySQL.
+        - start_date (date): The start date for filtering articles.
+        - end_date (date): The end date for filtering articles.
 
-            # Flexible search parameters
-            search_params = {
-                "metric_type": "L2",
-                "params": {
-                    "nprobe": 20,  # Increased for broader search
-                    "ef": 100  # Extended search range
-                }
+    Output:
+        - list: A list of tuples containing article data (id, title, pub_date).
+
+    Purpose:
+        This function retrieves articles from the MySQL database based on the specified article IDs and filters them
+        by publication date within the given range (start_date to end_date).
+    """
+    connection = mysql.connector.connect(**MYSQL_CONFIG)
+    cursor = connection.cursor()
+
+    placeholders = ", ".join(["%s"] * len(ids))  # Prepare placeholders for IN clause
+    query = f"""
+        SELECT id, title, pub_date 
+        FROM articles 
+        WHERE id IN ({placeholders}) AND pub_date BETWEEN %s AND %s
+    """
+
+    cursor.execute(query, ids + [start_date, end_date])
+    articles = cursor.fetchall()
+    connection.close()
+
+    return articles
+
+
+def search_articles(query):
+    """
+    Enhanced search function with improved date parsing and semantic understanding.
+
+    Input:
+        - query (str): The natural language query for searching articles (e.g., "Give me the journals published last week").
+
+    Output:
+        - list: A list of articles that match the search criteria (filtered by date and relevance).
+
+    Purpose:
+        This function takes a natural language query, parses the date range (using the `parse_advanced_date_from_query` function),
+        and then performs a semantic search in Milvus to find articles that match the query. It retrieves article IDs from Milvus,
+        fetches the corresponding articles from MySQL, and returns the results filtered by date.
+    """
+    try:
+        # Step 1: Parse the date range from the query
+        start_date, end_date = parse_advanced_date_from_query(query)
+        logging.info(f"Searching for articles published between {start_date} and {end_date}")
+
+        # Step 2: Connect to Milvus and perform semantic search
+        connections.connect(host=config["MILVUS"]["host"], port=config["MILVUS"]["port"])
+        collection = Collection(config["MILVUS"]["collection_name"])
+        collection.load()
+
+        # Use a more advanced embedding model for better semantic understanding
+        model = SentenceTransformer("multi-qa-MiniLM-L6-cos-v1")  # More powerful model
+        embedding = model.encode([query])[0]
+
+        # More flexible search parameters
+        search_params = {
+            "metric_type": "L2",
+            "params": {
+                "nprobe": 20,  # Increased for broader search
+                "ef": 100  # Extended search range
             }
+        }
 
-            # Perform semantic search
-            results = collection.search(
-                data=[embedding],
-                anns_field="embedding",
-                param=search_params,
-                limit=top_k
-            )
+        # Increased search limit to capture more potential matches
+        results = collection.search([embedding], anns_field="embedding", param=search_params, limit=50)
 
-            # Extract article IDs
-            article_ids = [hit.id for hit in results[0]]
-
-            if not article_ids:
-                logging.info("No relevant articles found in Milvus.")
-                return []
-
-            # Fetch and filter articles from MySQL
-            connection = mysql.connector.connect(**self.mysql_config)
-            cursor = connection.cursor()
-
-            # Prepare placeholders for IN clause
-            placeholders = ", ".join(["%s"] * len(article_ids))
-            query = f"""
-                SELECT id, title, pub_date 
-                FROM articles 
-                WHERE id IN ({placeholders}) 
-                AND pub_date BETWEEN %s AND %s
-                ORDER BY pub_date DESC
-            """
-
-            cursor.execute(query, article_ids + [start_date, end_date])
-            articles = cursor.fetchall()
-            connection.close()
-
-            # Display results
-            if articles:
-                print("\nSearch Results:")
-                for article in articles:
-                    print(f"ID: {article[0]}, Title: {article[1]}, Date: {article[2]}")
-                return articles
-            else:
-                logging.info("No articles match the specified date range.")
-                return []
-
-        except Exception as e:
-            logging.error(f"An error occurred during search: {e}")
+        # Step 3: Retrieve IDs from Milvus results
+        article_ids = [hit.id for hit in results[0]]
+        if not article_ids:
+            logging.info("No relevant articles found in Milvus.")
             return []
+
+        # Step 4: Fetch details from MySQL and filter by date
+        logging.info("Fetching article details from MySQL...")
+        articles = fetch_articles_from_mysql(article_ids, start_date, end_date)
+
+        # Step 5: Display and return results
+        if articles:
+            print("\nSearch Results:")
+            for article in articles:
+                print(f"ID: {article[0]}, Title: {article[1]}, Date: {article[2]}")
+            return articles
+        else:
+            logging.info("No articles match the specified date range.")
+            return []
+
+    except Exception as e:
+        logging.error(f"An error occurred during search: {e}")
+        return []
 
 
 def main():
     """
-    Main function to allow user input for searching articles
-    """
-    search_engine = AdvancedArticleSearch()
+    Main function to allow user input for searching articles.
 
+    Input: None
+    Output: None
+
+    Purpose:
+        This function runs an interactive loop allowing the user to input a natural language query and retrieve articles
+        that match the query (filtered by date). The user can continue searching or exit the program based on input.
+    """
     while True:
         # Prompt user for search query
-        query = input("Enter a search query (e.g., 'Give me the journals published in 2023'): ")
+        query = input("Enter a search query (e.g., 'Give me the journals published last week'): ")
 
         if query.strip().lower() == "exit":
             print("Exiting the program.")
             break
 
         # Perform the search based on user input
-        search_engine.search_articles(query)
+        search_articles(query)
 
         # Ask the user if they want to search again or exit
         user_choice = input("\nDo you want to search again? (yes/no): ").strip().lower()

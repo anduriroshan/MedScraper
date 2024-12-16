@@ -19,12 +19,21 @@ MYSQL_CONFIG = {
 # Use a smaller, faster model for CPU
 summarizer = pipeline("summarization", model="t5-small", device=-1)  # Use CPU
 
+
 def extract_keywords_tfidf(text, num_keywords=5):
     """
     Extract top keywords using TF-IDF.
-    :param text: The text to analyze.
-    :param num_keywords: Number of keywords to extract.
-    :return: A comma-separated string of keywords.
+
+    Input:
+        - text (str): The text to analyze.
+        - num_keywords (int): Number of keywords to extract (default is 5).
+
+    Output:
+        - (str): A comma-separated string of keywords.
+
+    Purpose:
+        This function takes an input text and uses the TF-IDF method to extract the top 'num_keywords' keywords from it.
+        TF-IDF helps identify the most relevant words in the text based on their frequency and importance.
     """
     vectorizer = TfidfVectorizer(stop_words="english", max_features=num_keywords)
     tfidf_matrix = vectorizer.fit_transform([text])
@@ -35,9 +44,18 @@ def extract_keywords_tfidf(text, num_keywords=5):
 def summarize_texts_in_batch(texts, batch_size=10):
     """
     Summarize a list of texts in batches using Hugging Face Transformers with dynamic length calculation.
-    :param texts: List of texts to summarize.
-    :param batch_size: Number of texts to process in a batch.
-    :return: List of summaries.
+
+    Input:
+        - texts (list): A list of strings (texts) to summarize.
+        - batch_size (int): Number of texts to process in a batch (default is 10).
+
+    Output:
+        - summaries (list): A list of summarized texts.
+
+    Purpose:
+        This function processes a list of texts by splitting them into batches. It calculates dynamic lengths for
+        each text and uses the Hugging Face model (`t5-small`) to generate summaries for each batch.
+        It returns the list of summarized texts.
     """
     summaries = []
     try:
@@ -67,6 +85,17 @@ def summarize_texts_in_batch(texts, batch_size=10):
 def parallel_summarize(texts, batch_size=10):
     """
     Parallelize text summarization using ThreadPoolExecutor.
+
+    Input:
+        - texts (list): A list of texts to summarize.
+        - batch_size (int): Number of texts to process in a batch (default is 10).
+
+    Output:
+        - summaries (list): A list of summarized texts.
+
+    Purpose:
+        This function splits the texts into batches and uses the ThreadPoolExecutor to parallelize the summarization
+        process. It speeds up the process by summarizing multiple texts simultaneously.
     """
     summaries = []
     with ThreadPoolExecutor(max_workers=5) as executor:
@@ -80,6 +109,16 @@ def parallel_summarize(texts, batch_size=10):
 def summarize_articles():
     """
     Summarize article abstracts and extract keywords in batches using Hugging Face and TF-IDF.
+
+    Input:
+        - None
+
+    Output:
+        - None
+
+    Purpose:
+        This function fetches the article abstracts from the MySQL database, summarizes them in batches,
+        extracts keywords using TF-IDF, and updates the summaries and keywords in the database.
     """
     connection = mysql.connector.connect(**MYSQL_CONFIG)
     cursor = connection.cursor()
@@ -127,6 +166,7 @@ def summarize_articles():
     connection.close()
     logging.info("Summaries and keywords added to MySQL.")
     print("Summaries and keywords added to MySQL.")
+
 
 if __name__ == "__main__":
     summarize_articles()

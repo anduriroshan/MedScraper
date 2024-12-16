@@ -9,7 +9,7 @@ from src.logger import logging  # Import logging from the custom logger module
 config = configparser.ConfigParser()
 config.read('config\config.ini')
 
-# MySQL Connection
+# MySQL Connection Configuration
 MYSQL_CONFIG = {
     "host": config["MYSQL"]["host"],
     "user": config["MYSQL"]["user"],
@@ -19,7 +19,15 @@ MYSQL_CONFIG = {
 
 
 def connect_mysql():
-    """Connect to MySQL and return the connection object."""
+    """
+    Establish a connection to MySQL database.
+
+    Input: None
+    Output: MySQL connection object
+
+    This function connects to the MySQL database using credentials from the config file. If the connection fails,
+    it logs the error and raises an exception.
+    """
     try:
         connection = mysql.connector.connect(**MYSQL_CONFIG)
         logging.info("Successfully connected to MySQL.")
@@ -30,7 +38,20 @@ def connect_mysql():
 
 
 def crawl_articles(pages=5):
-    """Crawl article details from Nature's Oncology section."""
+    """
+    Crawl article details (title, publication date, abstract) from Nature's Oncology section.
+
+    Input:
+        - pages (int): The number of pages to scrape (default is 5).
+
+    Output:
+        - articles (list): A list of dictionaries, where each dictionary contains article details like title,
+          publication date, and abstract.
+
+    This function fetches article titles, publication dates, and abstracts by crawling through multiple pages of
+    Nature's Oncology section based on the given number of pages. The articles are parsed from the HTML and
+    stored in a list.
+    """
     BASE_URL = config["SCRAPER"]["BASE_URL"]
     subject = config["SCRAPER"]["subject"]
     article_type = config["SCRAPER"]["article_type"]
@@ -73,9 +94,19 @@ def crawl_articles(pages=5):
     return articles
 
 
-
 def fetch_abstract(url):
-    """Fetch the abstract of an article from its detail page."""
+    """
+    Fetch the abstract of an article from its detail page.
+
+    Input:
+        - url (str): The URL of the article page.
+
+    Output:
+        - abstract (str): The abstract of the article or "No Abstract" if not found.
+
+    This function fetches the abstract by making an HTTP request to the article's URL, parses the page's HTML,
+    and extracts the abstract text. If the abstract is not found, it returns "No Abstract".
+    """
     try:
         response = requests.get(url)
         soup = BeautifulSoup(response.text, "html.parser")
@@ -87,7 +118,18 @@ def fetch_abstract(url):
 
 
 def save_to_mysql(articles):
-    """Save the articles into MySQL."""
+    """
+    Save the crawled articles into the MySQL database.
+
+    Input:
+        - articles (list): A list of dictionaries containing article details (title, pub_date, abstract).
+
+    Output:
+        - None
+
+    This function saves the article data into the MySQL database. It first checks if the 'articles' table exists,
+    and creates it if necessary. Then, it inserts each article into the table.
+    """
     try:
         connection = connect_mysql()
         cursor = connection.cursor()
@@ -141,4 +183,3 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.error(f"An unexpected error occurred: {e}")
-
