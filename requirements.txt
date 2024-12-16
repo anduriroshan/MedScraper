@@ -1,9 +1,10 @@
-pandas
 requests
 beautifulsoup4
 mysql-connector-python
-gensim
 pymilvus
 sentence-transformers
+transformers
+spacy
+scikit-learn
 
 -e .

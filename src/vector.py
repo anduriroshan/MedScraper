@@ -1,88 +1,46 @@
 from pymilvus import connections, FieldSchema, CollectionSchema, DataType, Collection
 from sentence_transformers import SentenceTransformer
 import mysql.connector
+import configparser
+from src.logger import logging
 
-# MySQL Configuration
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",  # Replace with your MySQL username
-    "password": "root",  # Replace with your MySQL password
-    "database": "nature_articles"  # Replace with your database name
-}
+# Configurations
+config = configparser.ConfigParser()
+config.read('config/config.ini')
 
-# Step 1: Connect to MySQL and Fetch Titles
-def fetch_titles_from_mysql():
-    """Fetch journal titles from MySQL database."""
-    try:
-        connection = mysql.connector.connect(**DB_CONFIG)
-        cursor = connection.cursor()
-        query = "SELECT title FROM articles"  # Replace 'articles' with your table name
-        cursor.execute(query)
-        titles = [row[0] for row in cursor.fetchall()]  # Fetch all titles
-        print(f"Fetched {len(titles)} titles from MySQL.")
-        return titles
+MILVUS_CONFIG = {"host": config["MILVUS"]["host"], "port": config["MILVUS"]["port"]}
+MYSQL_CONFIG = {key: config["MYSQL"][key] for key in config["MYSQL"]}
+COLLECTION_NAME = config["MILVUS"]["collection_name"]
 
-    except mysql.connector.Error as err:
-        print(f"Error: {err}")
-        return []
+def connect_milvus():
+    connections.connect(**MILVUS_CONFIG)
 
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
-
-# Step 2: Connect to Milvus
-def connect_to_milvus():
-    """Connect to Milvus server."""
-    connections.connect(host="localhost", port="19530")
-    print("Connected to Milvus!")
-
-# Step 3: Create Collection in Milvus
-def create_collection(collection_name):
-    """Define the schema and create a collection in Milvus."""
-    fields = [
-        FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-        FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=512),
-        FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=384),  # Vector dimension
-    ]
-    schema = CollectionSchema(fields, description="Journal Title Embeddings")
-    collection = Collection(name=collection_name, schema=schema)
-    print(f"Collection '{collection_name}' created.")
+def create_collection():
+    """Create Milvus collection."""
+    schema = CollectionSchema([
+        FieldSchema("id", DataType.INT64, is_primary=True),
+        FieldSchema("embedding", DataType.FLOAT_VECTOR, dim=384),
+    ])
+    collection = Collection(COLLECTION_NAME, schema)
+    collection.create_index("embedding", {"index_type": "IVF_FLAT", "metric_type": "L2", "params": {"nlist": 128}})
     return collection
 
-# Step 4: Insert Data into Milvus
-def insert_titles_to_milvus(collection, titles):
-    """Generate embeddings for journal titles and insert into Milvus."""
-    model = SentenceTransformer("all-MiniLM-L6-v2")  # Pre-trained Sentence-BERT model
-    embeddings = [model.encode(title) for title in titles]  # Generate embeddings
+def insert_embeddings():
+    """Fetch data from MySQL and insert embeddings into Milvus."""
+    model = SentenceTransformer("all-MiniLM-L6-v2")
+    connection = mysql.connector.connect(**MYSQL_CONFIG)
+    cursor = connection.cursor()
+    cursor.execute("SELECT id, title FROM articles")
+    records = cursor.fetchall()
 
-    # Prepare data for Milvus
-    entities = [
-        titles,  # Journal Titles
-        embeddings  # Corresponding Embeddings
-    ]
+    embeddings = [model.encode(title) for _, title in records]
+    ids = [record[0] for record in records]
 
-    # Insert data into Milvus
-    collection.insert([None, entities[0], entities[1]])
-    print(f"Inserted {len(titles)} titles into Milvus.")
+    collection = Collection(COLLECTION_NAME)
+    collection.insert([ids, embeddings])
+    logging.info("Embeddings inserted into Milvus.")
 
-# Step 5: Main Execution
 if __name__ == "__main__":
-    # Connect to Milvus
-    connect_to_milvus()
-
-    # Define collection name
-    collection_name = "nature_articles"
-
-    # Create a Milvus collection
-    collection = create_collection(collection_name)
-
-    # Fetch titles from MySQL
-    titles = fetch_titles_from_mysql()
-
-    # Insert titles into Milvus
-    if titles:
-        insert_titles_to_milvus(collection, titles)
-    else:
-        print("No titles to insert into Milvus.")
+    connect_milvus()
+    create_collection()
+    insert_embeddings()

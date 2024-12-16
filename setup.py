@@ -1,6 +1,5 @@
 from setuptools import find_packages, setup
 
-
 HYPEN_E_DOT = '-e .'
 
 def get_requirements(file_path):

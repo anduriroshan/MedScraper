@@ -1,165 +1,144 @@
 import requests
 from bs4 import BeautifulSoup
 import mysql.connector
+import configparser
 import datetime
-from src.logger import logging
+from src.logger import logging  # Import logging from the custom logger module
 
-BASE_URL = "https://www.nature.com/search"
-PARAMS = {
-    "subject": "oncology",
-    "article_type": "protocols,research,reviews",
-    "page": 1
+# Load Configurations
+config = configparser.ConfigParser()
+config.read('config\config.ini')
+
+# MySQL Connection
+MYSQL_CONFIG = {
+    "host": config["MYSQL"]["host"],
+    "user": config["MYSQL"]["user"],
+    "password": config["MYSQL"]["password"],
+    "database": config["MYSQL"]["database"]
 }
 
-# Database Configuration
-DB_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "root",  # Replace with your MySQL password
-    "database": "nature_articles"
-}
 
-def fetch_article_links():
-    """Fetch article links from the main search page."""
-    page = 1
-    article_links = []
+def connect_mysql():
+    """Connect to MySQL and return the connection object."""
+    try:
+        connection = mysql.connector.connect(**MYSQL_CONFIG)
+        logging.info("Successfully connected to MySQL.")
+        return connection
+    except mysql.connector.Error as e:
+        logging.error(f"Error connecting to MySQL: {e}")
+        raise
 
-    while page < 2:
-        logging.info(f"Scraping search page {page}...")
-        PARAMS["page"] = page
-        response = requests.get(BASE_URL, params=PARAMS)
-        response.encoding = 'utf-8'
+
+def crawl_articles(pages=5):
+    """Crawl article details from Nature's Oncology section."""
+    BASE_URL = config["SCRAPER"]["BASE_URL"]
+    subject = config["SCRAPER"]["subject"]
+    article_type = config["SCRAPER"]["article_type"]
+
+    articles = []
+    for page in range(1, int(pages) + 1):
+        params = {
+            "subject": subject,
+            "article_type": article_type,
+            "page": page
+        }
+
+        logging.info(f"Crawling page {page}...")
+        response = requests.get(BASE_URL, params=params)
 
         if response.status_code != 200:
-            logging.info("Failed to fetch page. Stopping.")
-            break
+            logging.error(f"Failed to fetch page {page}, status code: {response.status_code}")
+            continue
 
         soup = BeautifulSoup(response.text, "html.parser")
         article_items = soup.find_all("li", class_="app-article-list-row__item")
 
-        if not article_items:
-            logging.info("No more articles found. Stopping.")
-            break
+        for item in article_items:
+            try:
+                title_tag = item.find("h3", class_="c-card__title")
+                title = title_tag.get_text(strip=True) if title_tag else "No Title"
+                link = "https://www.nature.com" + item.find("a")["href"]
+                pub_date = item.find("time")["datetime"] if item.find("time") else "No Date"
+                abstract = fetch_abstract(link)
 
-        for article in article_items:
-            # Extract article link
-            title_tag = article.find("h3", class_="c-card__title").find("a", href=True)
-            if title_tag and title_tag["href"]:
-                article_links.append("https://www.nature.com" + title_tag["href"])
+                articles.append({
+                    "title": title,
+                    "pub_date": pub_date,
+                    "abstract": abstract
+                })
+                logging.info(f"Fetched article: {title}")
+            except Exception as e:
+                logging.error(f"Error parsing article on page {page}: {e}")
 
-        page += 1
-
-    return article_links
+    return articles
 
 
-def fetch_article_details(article_url):
-    """Fetch article details (title, authors, date, abstract, and keywords) from the article page."""
-    response = requests.get(article_url)
-    response.encoding = 'utf-8'
-    if response.status_code != 200:
-        logging.info(f"Failed to fetch article page: {article_url}")
-        return None
 
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # Extract the article title
-    title_tag = soup.find("h1", class_="c-article-title")
-    title = title_tag.text.strip() if title_tag else "No Title"
-
-    # Extract the authors
-    authors = []
-    author_tags = soup.find_all("li", class_="c-article-author-list__item")
-    for author in author_tags:
-        name_tag = author.find("a", attrs={"data-test": "author-name"})
-        if name_tag:
-            authors.append(name_tag.text.strip())
-
-    # Extract the publication date
-    date = "No Date"
-    identifiers = soup.find("ul", class_="c-article-identifiers")
-    if identifiers:
-        for item in identifiers.find_all("li", class_="c-article-identifiers__item"):
-            time_tag = item.find("time")
-            if time_tag:
-                date = time_tag.text.strip()
-                break
-
-    # Extract the abstract
-    abstract = "No Abstract"
-    abstract_header = soup.find("h2", {"id": "Abs1"})
-    if abstract_header:
-        abstract_section = abstract_header.find_next_sibling("div", class_="c-article-section__content")
-        if abstract_section:
-            abstract = abstract_section.text.strip()
-
-    # Extract the keywords
-    keywords = []
-    keywords_header = soup.find("h3", class_="c-article__sub-heading", string="Keywords")
-    if keywords_header:
-        keyword_list = keywords_header.find_next_sibling("ul", class_="c-article-subject-list")
-        if keyword_list:
-            keywords = [kw.text.strip() for kw in keyword_list.find_all("li")]
-
-    # Format date
+def fetch_abstract(url):
+    """Fetch the abstract of an article from its detail page."""
     try:
-        pub_date = datetime.datetime.strptime(date, "%d %B %Y").date()
-    except ValueError:
-        pub_date = None
-
-    return {
-        "title": title,
-        "authors": ", ".join(authors),
-        "pub_date": pub_date,
-        "abstract": abstract,
-        "keywords": ", ".join(keywords)
-    }
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, "html.parser")
+        abstract_section = soup.find("div", class_="c-article-section__content")
+        return abstract_section.get_text(strip=True) if abstract_section else "No Abstract"
+    except Exception as e:
+        logging.error(f"Error fetching abstract for {url}: {e}")
+        return "No Abstract"
 
 
-def insert_into_mysql(data):
-    """Insert article data into MySQL."""
+def save_to_mysql(articles):
+    """Save the articles into MySQL."""
     try:
-        connection = mysql.connector.connect(**DB_CONFIG)
+        connection = connect_mysql()
         cursor = connection.cursor()
 
-        insert_query = """
-            INSERT INTO articles (title, authors, pub_date, abstract, keywords)
-            VALUES (%s, %s, %s, %s, %s)
-        """
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS articles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                title VARCHAR(500),
+                pub_date DATE,
+                abstract TEXT
+            )
+        """)
+        logging.info("Verified or created 'articles' table in MySQL.")
 
-        for article in data:
-            cursor.execute(insert_query, (
-                article["title"],
-                article["authors"],
-                article["pub_date"],
-                article["abstract"],
-                article["keywords"]
-            ))
+        insert_query = "INSERT INTO articles (title, pub_date, abstract) VALUES (%s, %s, %s)"
+        for article in articles:
+            cursor.execute(insert_query, (article["title"], article["pub_date"], article["abstract"]))
 
         connection.commit()
-        logging.info("Data successfully inserted into MySQL.")
-
-    except mysql.connector.Error as err:
-        logging.error(f"Error: {err}")
+        logging.info(f"Successfully inserted {len(articles)} articles into MySQL.")
+    except mysql.connector.Error as e:
+        logging.error(f"Error saving articles to MySQL: {e}")
     finally:
-        if cursor:
-            cursor.close()
         if connection:
             connection.close()
+            logging.info("MySQL connection closed.")
 
 
 if __name__ == "__main__":
-    # Step 1: Get all article links from the search pages
-    article_links = fetch_article_links()
-    logging.info(f"Found {len(article_links)} articles.\n")
+    try:
+        # Start logging for the process
+        logging.info("Starting article crawling process...")
 
-    # Step 2: Visit each article page and extract details
-    articles_data = []
-    for idx, url in enumerate(article_links):
-        logging.info(f"Fetching details for article {idx + 1}...")
-        details = fetch_article_details(url)
-        if details:
-            articles_data.append(details)
+        # Load the number of pages to scrape from the configuration
+        pages_to_scrape = int(config["SCRAPER"]["PAGES"])
+        logging.info(f"Configured to crawl {pages_to_scrape} pages.")
 
-    # Step 3: Insert data into MySQL
-    insert_into_mysql(articles_data)
-    logging.info("Process completed successfully.")
+        # Step 1: Crawl articles
+        articles = crawl_articles(pages=pages_to_scrape)
+        logging.info(f"Total articles fetched: {len(articles)}")
+
+        # Step 2: Save articles to MySQL
+        if articles:
+            save_to_mysql(articles)
+            logging.info("All articles have been successfully saved to the MySQL database.")
+        else:
+            logging.warning("No articles were fetched during the crawling process.")
+
+        # End of process
+        logging.info("Article crawling process completed successfully.")
+
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {e}")
+
